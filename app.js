@@ -1,50 +1,93 @@
 const express = require('express');
+const bodyParser = require('body-parser');
+const mongoose = require('mongoose');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
+
 const app = express();
 const port = 3000;
 
-// Middleware: Logging
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
+// Connect to MongoDB
+mongoose.connect('mongodb://<username>:<password>@localhost/myapp', { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => {
+    console.log('Connected to MongoDB');
+  })
+  .catch((error) => {
+    console.error('Error connecting to MongoDB:', error);
+  });
+
+// Define a schema and model for a User
+const userSchema = new mongoose.Schema({
+  email: { type: String, unique: true },
+  password: String
 });
+const User = mongoose.model('User', userSchema);
 
 // Middleware: JSON Parsing
-app.use(express.json());
+app.use(bodyParser.json());
 
-// Route: Home
-app.get('/', (req, res) => {
-  res.send('Welcome to the Home Page!');
+// Route: User Registration
+app.post('/register', (req, res) => {
+  const { email, password } = req.body;
+  bcrypt.hash(password, 10)
+    .then((hashedPassword) => {
+      const user = new User({ email, password: hashedPassword });
+      return user.save();
+    })
+    .then(() => {
+      res.status(201).json({ message: 'User registered successfully' });
+    })
+    .catch((error) => {
+      res.status(500).json({ error: 'An error occurred while registering the user' });
+    });
 });
 
-// Route: Users
-app.get('/users', (req, res) => {
-  const users = [
-    { id: 1, name: 'John' },
-    { id: 2, name: 'Jane' },
-    { id: 3, name: 'Bob' }
-  ];
-  res.json(users);
+// Route: User Login
+app.post('/login', (req, res) => {
+  const { email, password } = req.body;
+  User.findOne({ email })
+    .then((user) => {
+      if (!user) {
+        res.status(401).json({ error: 'Authentication failed' });
+      } else {
+        return bcrypt.compare(password, user.password)
+          .then((isValidPassword) => {
+            if (!isValidPassword) {
+              res.status(401).json({ error: 'Authentication failed' });
+            } else {
+              const token = jwt.sign({ userId: user._id }, 'secret_key', { expiresIn: '1h' });
+              res.json({ message: 'Authentication successful', token });
+            }
+          });
+      }
+    })
+    .catch((error) => {
+      res.status(500).json({ error: 'An error occurred while authenticating the user' });
+    });
 });
 
-// Route: User by ID
-app.get('/users/:id', (req, res) => {
-  const id = req.params.id;
-  const user = { id: id, name: 'User ' + id };
-  res.json(user);
+// Route: Protected Route
+app.get('/protected', authenticateToken, (req, res) => {
+  res.json({ message: 'Protected route accessed successfully' });
 });
 
-// Route: Create User
-app.post('/users', (req, res) => {
-  const user = req.body;
-  // Assuming user has a 'name' property
-  user.id = Date.now();
-  res.status(201).json(user);
-});
-
-// Route: Not Found
-app.use((req, res) => {
-  res.status(404).send('404 - Not Found');
-});
+// Middleware: JWT Authentication
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) {
+    res.status(401).json({ error: 'Authentication failed' });
+  } else {
+    jwt.verify(token, 'secret_key', (err, user) => {
+      if (err) {
+        res.status(401).json({ error: 'Authentication failed' });
+      } else {
+        req.user = user;
+        next();
+      }
+    });
+  }
+}
 
 // Start the server
 app.listen(port, () => {
